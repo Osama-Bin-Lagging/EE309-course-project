@@ -1,4 +1,3 @@
--- proc.vhd
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -16,7 +15,32 @@ entity proc is
         wr_data_IMEM   : in  std_logic_vector(RAM_WIDTH-1 downto 0);
         rd_en_DMEM     : in  std_logic;
         rd_valid_DMEM  : out std_logic;
-        rd_data_DMEM   : out std_logic_vector(RAM_WIDTH-1 downto 0)
+        rd_data_DMEM   : buffer std_logic_vector(RAM_WIDTH-1 downto 0);
+        
+        -- Pipeline stage outputs for monitoring
+        -- IF stage outputs
+        if_stage_pc          : out std_logic_vector(15 downto 0);
+        if_stage_instruction : out std_logic_vector(15 downto 0);
+        
+        -- ID stage outputs
+        id_stage_pc          : out std_logic_vector(15 downto 0);
+        id_stage_instruction : out std_logic_vector(15 downto 0);
+        
+        -- EX stage outputs
+        ex_stage_opcode      : out std_logic_vector(3 downto 0);
+        ex_stage_rd_addr     : out std_logic_vector(2 downto 0);
+        ex_stage_rs1_data    : out std_logic_vector(15 downto 0);
+        ex_stage_rs2_data    : out std_logic_vector(15 downto 0);
+        
+        -- MEM stage outputs
+        mem_stage_opcode     : out std_logic_vector(3 downto 0);
+        mem_stage_alu_result : out std_logic_vector(15 downto 0);
+        mem_stage_rs2_data   : out std_logic_vector(15 downto 0);
+        
+        -- WB stage outputs
+        wb_stage_result      : out std_logic_vector(15 downto 0);
+        wb_stage_rd_addr     : out std_logic_vector(2 downto 0);
+        wb_stage_rd_wr_en    : out std_logic
     );
 end entity proc;
 
@@ -82,14 +106,22 @@ architecture rtl of proc is
     signal pc, next_pc            : std_logic_vector(15 downto 0) := (others => '0');
     signal if_id_in,  if_id_out   : if_id_reg_type;
     signal id_ex_in,  id_ex_out   : id_ex_reg_type;
-    signal ex_mem_in, ex_mem_out : ex_mem_reg_type;
-    signal mem_wb_in, mem_wb_out : mem_wb_reg_type;
+    signal ex_mem_in, ex_mem_out  : ex_mem_reg_type;
+    signal mem_wb_in, mem_wb_out  : mem_wb_reg_type;
 
     -- Buses
     signal rs1_data, rs2_data     : std_logic_vector(15 downto 0);
     signal alu_result             : std_logic_vector(15 downto 0);
     signal imem_data              : std_logic_vector(15 downto 0);
     signal wr_en_DMEM             : std_logic;
+    
+    -- ALU operand selection
+    signal alu_operand1           : std_logic_vector(15 downto 0);
+    signal alu_operand2           : std_logic_vector(15 downto 0);
+
+    -- Jump target calculation
+    signal jump_target            : std_logic_vector(15 downto 0);
+    signal should_jump            : std_logic;
 
 begin
     -- IMEM
@@ -127,8 +159,8 @@ begin
         port map (
             clk      => clk,
             rst      => rst,
-            rs1_addr => id_ex_out.rs1_addr,
-            rs2_addr => id_ex_out.rs2_addr,
+            rs1_addr => if_id_out.instruction(8 downto 6),  -- Read addresses come directly from instruction
+            rs2_addr => if_id_out.instruction(5 downto 3),
             rs1_data => rs1_data,
             rs2_data => rs2_data,
             rd_wr_en => mem_wb_out.rd_wr_en,
@@ -136,12 +168,19 @@ begin
             rd_data  => mem_wb_out.result_data
         );
 
+    -- ALU operand selection for different instruction types
+    -- This implements the proper operand selection based on instruction type
+    alu_operand1 <= id_ex_out.rs1_data;
+    
+    alu_operand2 <= id_ex_out.immediate when id_ex_out.opcode = OPCODE_ADDI else
+                    id_ex_out.rs2_data;
+
     -- ALU
     proc_alu: alu
         port map (
             opcode   => id_ex_out.opcode,
-            operand1 => id_ex_out.rs1_data,
-            operand2 => id_ex_out.rs2_data,
+            operand1 => alu_operand1,
+            operand2 => alu_operand2,
             result   => alu_result
         );
 
@@ -160,7 +199,13 @@ begin
             mem_wb_out => mem_wb_out
         );
 
-    -- PC Logic
+    -- Jump target calculation for JRI instruction
+    jump_target <= std_logic_vector(unsigned(id_ex_out.rs1_data) + 
+                   unsigned(id_ex_out.immediate(8 downto 0) & '0'));  -- Immediate * 2
+    
+    should_jump <= '1' when id_ex_out.opcode = OPCODE_JRI else '0';
+
+    -- PC Logic with jump support
     process(clk)
     begin
         if rising_edge(clk) then
@@ -171,7 +216,10 @@ begin
             end if;
         end if;
     end process;
-    next_pc <= std_logic_vector(unsigned(pc) + 1);
+    
+    -- PC update logic with jump support
+    next_pc <= jump_target when should_jump = '1' else
+               std_logic_vector(unsigned(pc) + 1);
 
     -- IF/ID Stage
     if_id_in.pc          <= pc;
@@ -186,17 +234,21 @@ begin
         id_ex_in.rs1_addr  <= if_id_out.instruction(8  downto 6);
         id_ex_in.rs2_addr  <= if_id_out.instruction(5  downto 3);
 
-        -- operands
+        -- forward operands
         id_ex_in.rs1_data  <= rs1_data;
         id_ex_in.rs2_data  <= rs2_data;
 
-        -- immediate (sign-extend low 8 bits)
-        id_ex_in.immediate <= std_logic_vector(
-                                resize(
-                                  signed(if_id_out.instruction(7 downto 0)), 
-                                  16
-                                )
-                              );
+        -- Handle different immediate formats based on instruction type
+        if id_ex_in.opcode = OPCODE_JRI then
+            -- JRI: 9-bit immediate for jump
+            id_ex_in.immediate <= std_logic_vector(resize(signed(if_id_out.instruction(8 downto 0)), 16));
+        elsif id_ex_in.opcode = OPCODE_ADDI then
+            -- ADDI: 6-bit immediate
+            id_ex_in.immediate <= std_logic_vector(resize(signed(if_id_out.instruction(5 downto 0)), 16));
+        else
+            -- Default: zero-extended
+            id_ex_in.immediate <= (others => '0');
+        end if;
 
         -- reg_write control
         if id_ex_in.opcode = OPCODE_LW   or
@@ -219,12 +271,39 @@ begin
     ex_mem_in.rd_addr    <= id_ex_out.rd_addr;
     ex_mem_in.reg_write  <= id_ex_out.reg_write;
 
-    -- MEM/WB Stage
-    mem_wb_in.result_data <= ex_mem_out.alu_result;
+    -- Special handling for LOAD instruction
+    -- For LW, we need to get data from DMEM
+    mem_wb_in.result_data <= rd_data_DMEM when ex_mem_out.opcode = OPCODE_LW else
+                             ex_mem_out.alu_result;
     mem_wb_in.rd_addr     <= ex_mem_out.rd_addr;
     mem_wb_in.rd_wr_en    <= ex_mem_out.reg_write;
 
-    -- generate DMEM write enable
+    -- Generate DMEM write enable for STORE instruction
     wr_en_DMEM <= '1' when ex_mem_out.opcode = OPCODE_SW else '0';
+
+    -- Map pipeline register contents to output ports for monitoring
+    -- IF stage outputs
+    if_stage_pc          <= pc;
+    if_stage_instruction <= imem_data;
+    
+    -- ID stage outputs (from IF/ID register)
+    id_stage_pc          <= if_id_out.pc;
+    id_stage_instruction <= if_id_out.instruction;
+    
+    -- EX stage outputs (from ID/EX register)
+    ex_stage_opcode      <= id_ex_out.opcode;
+    ex_stage_rd_addr     <= id_ex_out.rd_addr;
+    ex_stage_rs1_data    <= id_ex_out.rs1_data;
+    ex_stage_rs2_data    <= id_ex_out.rs2_data;
+    
+    -- MEM stage outputs (from EX/MEM register)
+    mem_stage_opcode     <= ex_mem_out.opcode;
+    mem_stage_alu_result <= ex_mem_out.alu_result;
+    mem_stage_rs2_data   <= ex_mem_out.rs2_data;
+    
+    -- WB stage outputs (from MEM/WB register)
+    wb_stage_result      <= mem_wb_out.result_data;
+    wb_stage_rd_addr     <= mem_wb_out.rd_addr;
+    wb_stage_rd_wr_en    <= mem_wb_out.rd_wr_en;
 
 end architecture rtl;
