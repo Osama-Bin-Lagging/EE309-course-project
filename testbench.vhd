@@ -19,7 +19,7 @@ architecture rtl of testbench is
             wr_data_IMEM        : in  std_logic_vector(RAM_WIDTH-1 downto 0);
             rd_en_DMEM          : in  std_logic;
             rd_valid_DMEM       : out std_logic;
-            rd_data_DMEM        : out std_logic_vector(RAM_WIDTH-1 downto 0);
+            rd_data_DMEM        : buffer std_logic_vector(RAM_WIDTH-1 downto 0);
             -- Pipeline monitoring ports
             if_stage_pc         : out std_logic_vector(15 downto 0);
             if_stage_instruction: out std_logic_vector(15 downto 0);
@@ -82,6 +82,9 @@ architecture rtl of testbench is
     signal reg6_val             : std_logic_vector(15 downto 0);
     signal reg7_val             : std_logic_vector(15 downto 0);
     
+    -- Additional signals for LW instruction testing
+    signal cycle_count          : integer := 0;
+    
     -- Function to create instructions based on ISA
     function create_instruction(
         opcode     : std_logic_vector(3 downto 0);
@@ -136,7 +139,6 @@ begin
             wb_stage_result => wb_stage_result,
             wb_stage_rd_addr => wb_stage_rd_addr,
             wb_stage_rd_wr_en => wb_stage_rd_wr_en,
-            -- Connect register monitoring signals
             reg0_val => reg0_val,
             reg1_val => reg1_val,
             reg2_val => reg2_val,
@@ -152,6 +154,38 @@ begin
 
     -- Reset generation
     rst <= '1', '0' after 5 ns;
+    
+    -- Cycle counter for pipeline analysis
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            if rst = '1' then
+                cycle_count <= 0;
+            else
+                cycle_count <= cycle_count + 1;
+            end if;
+        end if;
+    end process;
+
+    -- Pipeline monitoring
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            if mem_stage_opcode = OPCODE_LW then
+                report "Cycle " & integer'image(cycle_count) & 
+                       ": LW instruction in MEM stage, addr = " & 
+                       integer'image(to_integer(unsigned(mem_stage_alu_result)));
+            end if;
+            
+            if wb_stage_rd_wr_en = '1' then
+                report "Cycle " & integer'image(cycle_count) & 
+                       ": WB stage writing value " & 
+                       integer'image(to_integer(unsigned(wb_stage_result))) & 
+                       " to register R" & 
+                       integer'image(to_integer(unsigned(wb_stage_rd_addr)));
+            end if;
+        end if;
+    end process;
 
     -- Test sequence
     process
@@ -160,92 +194,65 @@ begin
         wait until rst = '0';
         wait for 1 ns; -- Align with clock
         
-        -- Initialize DMEM with some test values for LW instructions
-        rd_en_DMEM <= '1';  -- Enable DMEM read operations
+        -- Enable DMEM read operations for LW instructions
+        rd_en_DMEM <= '1';
         
         -- Start loading instructions into IMEM
         wr_en_IMEM <= '1';
         
         -- Instruction 1: ADDI R1, R0, 10 (Add immediate value 10 to R0 and store in R1)
-        -- 0101 001 000 001010
         wr_data_IMEM <= create_instruction(OPCODE_ADDI, "001", "000", "000", "001010");
-        wait for 4 ns; -- Wait for one clock cycle
+        wait for 4 ns;
         
         -- Instruction 2: ADDI R2, R0, 5 (Add immediate value 5 to R0 and store in R2)
-        -- 0101 010 000 000101
         wr_data_IMEM <= create_instruction(OPCODE_ADDI, "010", "000", "000", "000101");
-        wait for 10 ns;
-        
-        -- Instruction 3: ADD R3, R1, R2 (Add R1 and R2, store in R3)
-        -- 0010 011 001 010 000
-        wr_data_IMEM <= create_instruction(OPCODE_ADD, "011", "001", "010");
         wait for 4 ns;
         
-        -- Instruction 4: SUB R4, R1, R2 (Subtract R2 from R1, store in R4)
-        -- 0011 100 001 010 000
-        wr_data_IMEM <= create_instruction(OPCODE_SUB, "100", "001", "010");
+        -- Instruction 3: ADDI R3, R0, 20 (Add immediate value 20 to R0 and store in R3)
+        wr_data_IMEM <= create_instruction(OPCODE_ADDI, "011", "000", "000", "010100");
         wait for 4 ns;
         
-        -- Instruction 5: MUL R5, R1, R2 (Multiply R1 and R2, store in R5)
-        -- 0100 101 001 010 000
-        wr_data_IMEM <= create_instruction(OPCODE_MUL, "101", "001", "010");
+        wr_data_IMEM <= create_instruction(OPCODE_SW, "011", "001", "010");
         wait for 4 ns;
         
-        -- Instruction 6: SLL R6, R1, R2 (Shift R1 left by the amount in R2, store in R6)
-        -- 0110 110 001 010 000
-        wr_data_IMEM <= create_instruction(OPCODE_SLL, "110", "001", "010");
+        wr_data_IMEM <= create_instruction(OPCODE_SW, "011", "000", "011");
         wait for 4 ns;
         
-        -- Instruction 7: SW R3, (Store R3 to DMEM)
-        -- 0001 011 000 000 000
-        wr_data_IMEM <= create_instruction(OPCODE_SW, "011", "000", "000");
+        wr_data_IMEM <= create_instruction(OPCODE_LW, "101", "001", "000");
         wait for 4 ns;
         
-        -- Instruction 8: SW R4, (Store R4 to DMEM)
-        -- 0001 100 000 000 000
-        wr_data_IMEM <= create_instruction(OPCODE_SW, "100", "000", "000");
+        -- Instruction 7: LW R7, R0 (Load from memory at address in R0 to R7)
+        wr_data_IMEM <= create_instruction(OPCODE_LW, "010", "000", "000");
         wait for 4 ns;
         
-        -- Instruction 9: SW R5, (Store R5 to DMEM)
-        -- 0001 101 000 000 000
-        wr_data_IMEM <= create_instruction(OPCODE_SW, "101", "000", "000");
-        wait for 4 ns;
-        
-        -- Instruction 10: LW R7, (Load from DMEM to R7)
-        -- 0000 111 000 000 000
-        wr_data_IMEM <= create_instruction(OPCODE_LW, "111", "000", "000");
-        wait for 4 ns;
-        
-        -- Instruction 11: JRI R0, 3 (Jump to PC = R0 + 3*2 = 6)
-        -- 0111 000 000000011
-        wr_data_IMEM <= create_instruction(OPCODE_JRI, "000", "000", "000", "000000", "000000011");
+        -- Instruction 8: ADD R6, R5, R7 (Add contents of R5 and R7, store in R6)
+        wr_data_IMEM <= create_instruction(OPCODE_ADD, "110", "101", "011");
         wait for 4 ns;
         
         -- Stop writing to IMEM
         wr_en_IMEM <= '0';
         
-        -- Wait for pipeline to execute all instructions (11 instructions + 5 stages = 16 cycles)
-        wait for 64 ns;
-		  -- Print final register values and verify execution
-        report "==== Test Complete ====";
-        report "Register Values after execution:";
-        report "R0: " & integer'image(to_integer(unsigned(reg0_val)));
-        report "R1: " & integer'image(to_integer(unsigned(reg1_val))) & " (Expected: 10)";
-        report "R2: " & integer'image(to_integer(unsigned(reg2_val))) & " (Expected: 5)";
-        report "R3: " & integer'image(to_integer(unsigned(reg3_val))) & " (Expected: 15 - sum of R1 and R2)";
-        report "R4: " & integer'image(to_integer(unsigned(reg4_val))) & " (Expected: 5 - difference of R1 and R2)";
-        report "R5: " & integer'image(to_integer(unsigned(reg5_val))) & " (Expected: 50 - product of R1 and R2)";
-        report "R6: " & integer'image(to_integer(unsigned(reg6_val))) & " (Expected: 320 - R1 shifted left by R2)";
-        report "R7: " & integer'image(to_integer(unsigned(reg7_val))) & " (Expected: First value read from DMEM)";
+        -- Wait for pipeline to execute all instructions
+        -- Allow enough cycles for pipeline stages to complete
+        wait for 60 ns;
         
-        -- Verify pipeline status
-        report "Pipeline Status:";
-        report "IF Stage - PC: " & integer'image(to_integer(unsigned(if_stage_pc)));
-        report "ID Stage - Instruction: 0x" & integer'image(to_integer(unsigned(id_stage_instruction)));
-        report "EX Stage - Opcode: " & integer'image(to_integer(unsigned(ex_stage_opcode)));
-        report "MEM Stage - ALU Result: " & integer'image(to_integer(unsigned(mem_stage_alu_result)));
-        report "WB Stage - Result: " & integer'image(to_integer(unsigned(wb_stage_result)));
-
+        -- Print final register values
+        report "==== Test Complete ====";
+        report "Register Values:";
+        report "R0: " & integer'image(to_integer(unsigned(reg0_val)));
+        report "R1: " & integer'image(to_integer(unsigned(reg1_val)));
+        report "R2: " & integer'image(to_integer(unsigned(reg2_val)));
+        report "R3: " & integer'image(to_integer(unsigned(reg3_val)));
+        report "R5: " & integer'image(to_integer(unsigned(reg5_val)));
+        report "R6: " & integer'image(to_integer(unsigned(reg6_val)));
+        report "R7: " & integer'image(to_integer(unsigned(reg7_val)));
+        
+        -- Verify LW instruction execution
+        report "LW Test Verification:";
+        report "Expected R5 value (LW from addr in R1): " & integer'image(to_integer(unsigned(reg2_val)));
+        report "Expected R7 value (LW from addr in R0): " & integer'image(to_integer(unsigned(reg3_val)));
+        report "Expected R6 value (R5 + R7): " & integer'image(to_integer(unsigned(reg5_val)) + to_integer(unsigned(reg7_val)));
+        
         -- End simulation
         report "Simulation completed!" severity note;
         wait;

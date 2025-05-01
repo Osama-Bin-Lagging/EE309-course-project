@@ -1,3 +1,4 @@
+-- constants_and_types.vhd
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -44,14 +45,18 @@ package constants_and_types is
         immediate   : std_logic_vector(15 downto 0);
         reg_write   : std_logic;
     end record;
-    -- EX/MEM stage carries ALU result, second operand for store, dest-reg info, and opcode
+
+    -- EX/MEM stage carries ALU result, both operands for memory/store, dest-reg info, and opcode
     type ex_mem_reg_type is record
-        opcode      : std_logic_vector(3  downto 0);
-        alu_result  : std_logic_vector(15 downto 0);
-        rs2_data    : std_logic_vector(15 downto 0);
-        rd_addr     : std_logic_vector(2  downto 0);
-        reg_write   : std_logic;
-    end record;
+		 opcode     : std_logic_vector(3 downto 0);
+		 alu_result : std_logic_vector(15 downto 0);
+		 rs1_data   : std_logic_vector(15 downto 0);
+		 rs2_data   : std_logic_vector(15 downto 0);
+		 rd_addr    : std_logic_vector(2 downto 0);
+		 reg_write  : std_logic;
+		 mem_data   : std_logic_vector(15 downto 0);  -- New field for SW data
+	end record;
+
     -- MEM/WB stage carries data to write back plus write-enable
     type mem_wb_reg_type is record
         result_data : std_logic_vector(15 downto 0);
