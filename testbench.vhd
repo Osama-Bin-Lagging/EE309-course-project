@@ -210,19 +210,19 @@ begin
         
         -- Instruction 3: ADDI R3, R0, 20 (Add immediate value 20 to R0 and store in R3)
         wr_data_IMEM <= create_instruction(OPCODE_ADDI, "011", "000", "000", "010100");
+        wait for 12 ns;
+        
+        wr_data_IMEM <= create_instruction(OPCODE_SW, "001", "001", "010");
         wait for 4 ns;
         
-        wr_data_IMEM <= create_instruction(OPCODE_SW, "011", "001", "010");
-        wait for 4 ns;
+        wr_data_IMEM <= create_instruction(OPCODE_SW, "010", "000", "011");
+        wait for 12 ns;
         
-        wr_data_IMEM <= create_instruction(OPCODE_SW, "011", "000", "011");
-        wait for 4 ns;
-        
-        wr_data_IMEM <= create_instruction(OPCODE_LW, "101", "001", "000");
+        wr_data_IMEM <= create_instruction(OPCODE_LW, "100", "001", "000");
         wait for 4 ns;
         
         -- Instruction 7: LW R7, R0 (Load from memory at address in R0 to R7)
-        wr_data_IMEM <= create_instruction(OPCODE_LW, "010", "000", "000");
+        wr_data_IMEM <= create_instruction(OPCODE_LW, "101", "000", "000");
         wait for 4 ns;
         
         -- Instruction 8: ADD R6, R5, R7 (Add contents of R5 and R7, store in R6)

@@ -117,9 +117,6 @@ architecture rtl of proc is
     signal ex_mem_in, ex_mem_out  : ex_mem_reg_type;
     signal mem_wb_in, mem_wb_out  : mem_wb_reg_type;
     
-    -- Assuming the ex_mem_reg_type in constants_and_types.all needs to be updated
-    -- to include a mem_data field for SW instruction
-
     -- Buses
     signal rs1_data, rs2_data     : std_logic_vector(15 downto 0);
     signal alu_result             : std_logic_vector(15 downto 0);
@@ -139,7 +136,15 @@ architecture rtl of proc is
     -- Memory read control signals
     signal mem_read               : std_logic;
 
+    -- Muxed rs2_addr for SW instructions
+    signal rs2_addr_mux           : std_logic_vector(2 downto 0);
+
 begin
+    -- Mux for rs2_addr: Select rd_addr (11-9) for SW, else rs2_addr (5-3)
+    rs2_addr_mux <= 
+        if_id_out.instruction(11 downto 9) when (if_id_out.instruction(15 downto 12) = OPCODE_SW) else 
+        if_id_out.instruction(5 downto 3); -- Fixed missing parenthesis
+
     -- Instruction Memory
     IMEM: ring_buffer
         generic map (RAM_WIDTH => RAM_WIDTH, RAM_DEPTH => RAM_DEPTH)
@@ -156,25 +161,22 @@ begin
         );
 
     -- DMEM Write Enable for SW instruction (Store Word) ONLY
-    -- Only activate when in MEM stage with SW opcode
     wr_en_DMEM <= '1' when ex_mem_out.opcode = OPCODE_SW else '0';
     
     -- Memory read control - active during MEM stage for LW instruction ONLY
     mem_read <= '1' when ex_mem_out.opcode = OPCODE_LW else '0';
     
     -- Data Memory - Ring Buffer
-    -- For LW: Read from the top of the buffer
-    -- For SW: Write to the back of the buffer
     DMEM: ring_buffer
         generic map (RAM_WIDTH => RAM_WIDTH, RAM_DEPTH => RAM_DEPTH)
         port map (
             clk      => clk,
             rst      => rst,
             wr_en    => wr_en_DMEM,
-            wr_data  => ex_mem_out.mem_data,    -- Data from rd specifically for SW instruction
+            wr_data  => ex_mem_out.mem_data,
             rd_en    => mem_read,
             rd_valid => dmem_rd_valid,
-            rd_data  => dmem_rd_data,           -- Data read from top of buffer
+            rd_data  => dmem_rd_data,
             empty    => open,
             full     => open
         );
@@ -198,13 +200,13 @@ begin
             mem_wb_out => mem_wb_out
         );
 
-    -- Register File
+    -- Register File with Corrected rs2_addr
     regfile: register_file
         port map (
             clk       => clk,
             rst       => rst,
             rs1_addr  => if_id_out.instruction(8 downto 6),
-            rs2_addr  => if_id_out.instruction(5 downto 3),
+            rs2_addr  => rs2_addr_mux,
             rs1_data  => rs1_data,
             rs2_data  => rs2_data,
             rd_wr_en  => mem_wb_out.rd_wr_en,
@@ -254,48 +256,41 @@ begin
     end process;
     
     next_pc <= jump_target when should_jump = '1' else
-               std_logic_vector(unsigned(pc) + 1);
+               std_logic_vector(unsigned(pc) + 2);
 
     -- IF/ID Stage
     if_id_in.pc          <= pc;
     if_id_in.instruction <= imem_data;
 
-    -- ID/EX Stage
-		-- In ID/EX Stage process:
-		ID_EX_STAGE: process(if_id_out, rs1_data, rs2_data)
-		begin
-			 id_ex_in.opcode    <= if_id_out.instruction(15 downto 12);
-			 id_ex_in.rd_addr   <= if_id_out.instruction(11 downto 9);
-			 id_ex_in.rs1_addr  <= if_id_out.instruction(8 downto 6);
-			  
-			 -- For SW: Route rd_addr to rs2_addr to capture rd_data
-			 if (if_id_out.instruction(15 downto 12) = OPCODE_SW) then
-				  id_ex_in.rs2_addr <= if_id_out.instruction(11 downto 9);
-			 else
-				  id_ex_in.rs2_addr <= if_id_out.instruction(5 downto 3);
-			 end if;
-			  
-			 id_ex_in.rs1_data  <= rs1_data;
-			 id_ex_in.rs2_data  <= rs2_data; -- Now carries rd_data for SW
+    -- ID/EX Stage Process (Corrected)
+    ID_EX_STAGE: process(if_id_out, rs1_data, rs2_data)
+    begin
+        id_ex_in.opcode    <= if_id_out.instruction(15 downto 12);
+        id_ex_in.rd_addr   <= if_id_out.instruction(11 downto 9);
+        id_ex_in.rs1_addr  <= if_id_out.instruction(8 downto 6);
+        id_ex_in.rs2_addr  <= rs2_addr_mux; -- Directly use muxed address
+        
+        id_ex_in.rs1_data  <= rs1_data;
+        id_ex_in.rs2_data  <= rs2_data;
 
-			 -- Immediate generation
-			 case if_id_out.instruction(15 downto 12) is
-				  when OPCODE_JRI =>
-						id_ex_in.immediate <= std_logic_vector(resize(signed(if_id_out.instruction(8 downto 0)), 16));
-				  when OPCODE_ADDI =>
-						id_ex_in.immediate <= std_logic_vector(resize(signed(if_id_out.instruction(5 downto 0)), 16));
-				  when others =>
-						id_ex_in.immediate <= (others => '0');
-			 end case;
+        -- Immediate generation
+        case if_id_out.instruction(15 downto 12) is
+            when OPCODE_JRI =>
+                id_ex_in.immediate <= std_logic_vector(resize(signed(if_id_out.instruction(8 downto 0)), 16));
+            when OPCODE_ADDI =>
+                id_ex_in.immediate <= std_logic_vector(resize(signed(if_id_out.instruction(5 downto 0)), 16));
+            when others =>
+                id_ex_in.immediate <= (others => '0');
+        end case;
 
-			 -- RegWrite control
-			 case if_id_out.instruction(15 downto 12) is
-				  when OPCODE_LW | OPCODE_ADD | OPCODE_ADDI | OPCODE_SUB | OPCODE_MUL | OPCODE_SLL =>
-						id_ex_in.reg_write <= '1';
-				  when others =>
-						id_ex_in.reg_write <= '0';
-			 end case;
-		end process;
+        -- RegWrite control
+        case if_id_out.instruction(15 downto 12) is
+            when OPCODE_LW | OPCODE_ADD | OPCODE_ADDI | OPCODE_SUB | OPCODE_MUL | OPCODE_SLL =>
+                id_ex_in.reg_write <= '1';
+            when others =>
+                id_ex_in.reg_write <= '0';
+        end case;
+    end process;
 
     -- EX/MEM Stage
     ex_mem_in.opcode     <= id_ex_out.opcode;
@@ -304,11 +299,9 @@ begin
     ex_mem_in.rs2_data   <= id_ex_out.rs2_data;
     ex_mem_in.rd_addr    <= id_ex_out.rd_addr;
     ex_mem_in.reg_write  <= id_ex_out.reg_write;
-    
-    ex_mem_in.mem_data <= id_ex_out.rs2_data; -- Uses rs2_data (now rd_data for SW)
+    ex_mem_in.mem_data   <= id_ex_out.rs2_data;
 
     -- MEM/WB Stage
-    -- For LW instruction, use data from the top of DMEM (ring buffer)
     mem_wb_in.result_data <= dmem_rd_data when ex_mem_out.opcode = OPCODE_LW else
                              ex_mem_out.alu_result;
     mem_wb_in.rd_addr     <= ex_mem_out.rd_addr;
